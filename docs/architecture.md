@@ -18,84 +18,128 @@ Build a search reranker for ABOUT YOU's SRP — given a `search_term`, reorder t
 
 **Where dbt lives:** Task 3 ("Next Steps") in the presentation — as the production architecture vision alongside Airflow for scheduling, lineage, and data quality monitoring.
 
-**Rationale:** The timebox is 5-6 hours. Standing up a database + dbt project eats 2-3 hours before any reranking logic is written. 
+**Rationale:** The timebox is 5-6 hours. Standing up a database + dbt project eats 2-3 hours before any reranking logic is written. The senior vision is demonstrated through the presentation, not by over-engineering the prototype.
 
-### D2: Statistical/heuristic model (not ML)
+### D2: Reranking strategy — comparative analysis with pluggable approaches
 
-**Context:** Approach choice between heuristic, statistical model, and full learning-to-rank.
+**Context:** Choosing how to compute ranking scores from click/impression/position data.
 
-**Decision:** Position-bias-corrected CTR scoring with confidence weighting. A statistical model grounded in IR best practices.
+**Decision:** Build a **pluggable strategy system** — the initial prototype implements a statistical model as the default, but the architecture supports swapping strategies via a `strategy` parameter. This allows the API to serve different approaches for different scenarios and shows the panel we evaluated multiple options rather than picking one naively.
 
-**Rationale:**
-- Achievable within the timebox with room for evaluation, QA tool, and presentation prep
-- Explainable to non-technical stakeholders (the presentation audience)
-- ML approaches (logistic regression, LambdaRank) add feature engineering, train/val splits, and debugging complexity that risks an incomplete deliverable
-- The data is highly sparse (~80%+ rows have zero clicks) — simple heuristics would overfit to noise, but lightweight statistical smoothing handles the long tail well
+**Strategy comparison:**
 
-### D3: Layered Python architecture
+| Strategy | How it works | Pros | Cons |
+|----------|-------------|------|------|
+| **A: Naive clicks** | Rank by `clicks` descending | Dead simple, no parameters | Overfits items with many impressions; position bias unaddressed; sparse terms collapse to random order |
+| **B: Raw CTR** | Rank by `ctr` (clicks/impressions × 100) descending | Accounts for exposure differences | Unstable at low impressions (1 click / 1 impression = 100% CTR beats a proven item); no position bias correction |
+| **C: Position-debiased CTR** | Weighted CTR corrected by impression position bias | Handles the known position effect (items at rank 1 get more clicks regardless of relevance) | Still unstable at low impression counts; no confidence floor |
+| **D: Smoothed CTR (Beta-binomial)** | `(clicks + α) / (impressions + β)` — shrinks noisy estimates toward a global prior | Robust at low impressions; handles sparsity well; well-grounded in Bayesian statistics | Requires tuning α/β from data; slightly less interpretable to non-technical stakeholders |
+| **E: Smoothed + position-corrected CTR** | Strategy D combined with a position bias correction factor | Best of both worlds — handles sparsity and position bias | Most parameters to tune; needs EDA to inform position correction shape |
+| **F: Learning-to-rank (e.g., LambdaRank)** | Gradient-boosted pairwise ranking on engineered features | Can learn complex interactions; standard in production search systems | Needs significantly more data, feature engineering, train/val splits; not achievable within 5-6 hour timebox; harder to explain |
+
+**Selected default: Strategy E (smoothed + position-corrected CTR)** for the prototype. The specific smoothing parameters (α, β) and position correction function shape are deferred to D6 — they will be informed by the EDA.
+
+**Pluggable implementation:** The reranker accepts a `strategy` enum, allowing the API to expose different approaches:
+
+```python
+from enum import Enum
+
+class RerankStrategy(str, Enum):
+    NAIVE_CLICKS = "naive_clicks"
+    RAW_CTR = "raw_ctr"
+    POSITION_DEBIASED_CTR = "position_debiased_ctr"
+    SMOOTHED_CTR = "smoothed_ctr"
+    SMOOTHED_POSITION_CTR = "smoothed_position_ctr"  # default
+
+# API usage: GET /rerank?q=kleid&k=20&strategy=smoothed_position_ctr
+```
+
+This demonstrates to the panel that we didn't pick an approach arbitrarily — we compared alternatives, understood their trade-offs, and built a system extensible enough to support multiple strategies as the product evolves.
+
+### D3: Layered Python architecture with dedicated EDA
 
 **Context:** How to organize the prototype code.
 
-**Decision:** Four-layer Python module structure:
+**Decision:** Five-package Python module structure, adding a dedicated `explore/` package for exploratory data analysis that feeds directly into model design decisions:
 
 ```
 src/
+├── explore/        # EDA — informs all downstream decisions
+│   ├── data_profile.py   # Row counts, sparsity, distributions, null rates
+│   ├── position_bias.py  # Click vs. position analysis, bias shape
+│   └── visualise.py      # Plots: CTR distributions, position bias curves, term length histograms
 ├── data/           # Ingestion + validation
-│   ├── loader.py       # Read parquet/csv, validate schema
-│   └── cleaner.py      # Deduplication, null handling, outlier flags
+│   ├── loader.py         # Read parquet/csv, validate schema
+│   └── cleaner.py        # Deduplication, null handling, outlier flags
 ├── models/         # Reranking logic
-│   ├── scorer.py       # CTR scoring, position bias correction, confidence weighting
-│   └── reranker.py     # Term-level reordering, tie-breaking
+│   ├── strategies.py     # Strategy enum + factory — all approaches from D2
+│   ├── scorer.py         # CTR scoring, position bias correction, confidence weighting
+│   └── reranker.py       # Term-level reordering, tie-breaking, strategy dispatch
 ├── evaluation/     # Offline evaluation
-│   └── metrics.py      # NDCG@K, position-weighted recall, etc.
+│   └── metrics.py        # NDCG@K, position-weighted recall, strategy comparison
 └── api.py          # FastAPI endpoint for serving
 ```
 
-**Rationale:** Separation of concerns mirrors what a production dbt pipeline would do (sources → staging → marts → serving), but without the warehouse dependency. Each layer is independently testable.
+**Rationale:** 
+- The `explore/` package runs first — its outputs (distribution stats, position bias curves, sparsity metrics) directly inform the parameters in D6 and the `cleaner.py` thresholds
+- Separation of concerns mirrors what a production dbt pipeline would do (sources → staging → marts → serving), but without the warehouse dependency
+- Each layer is independently testable
+- The EDA is not a throwaway notebook — it's part of the module, producing structured outputs that feed into configuration
 
 ### D4: FastAPI serving layer
 
 **Context:** How to expose the reranker for demonstration.
 
-**Decision:** Lightweight FastAPI app with a single endpoint — `GET /rerank?q={search_term}&k={top_n}` returning ordered product IDs with scores and metadata.
+**Decision:** Lightweight FastAPI app with a single endpoint — `GET /rerank?q={search_term}&k={top_n}&strategy={strategy}` returning ordered product IDs with scores, metadata, and product images (via CDN URL construction).
 
 **Rationale:** 
 - Shows production serving thinking beyond the notebook
-- The API seed in the presentation shows how this graduates from prototype to a production service
-- Low effort (~30 lines) for high signal to a senior role interview panel
+- The `strategy` parameter demonstrates the pluggable approach from D2
+- Low effort (~50 lines) for high signal to a senior role interview panel
+- Product images in the response make the presentation demo visually compelling
 
 ### D5: Evaluation metric — NDCG@10 with click-based relevance
 
 **Context:** How to measure reranker quality.
 
-**Decision:** NDCG@10 using clicks as relevance labels, computed per search term, then averaged across terms.
+**Decision:** NDCG@10 using clicks as relevance labels, computed per search term, then averaged across terms. All strategies from D2 are evaluated against the same baselines.
+
+**Baselines:**
+- `impression_pos_avg` ascending (logged display order — the "production today" reference)
+- Raw clicks descending (naive heuristic)
 
 **Rationale:**
 - NDCG is the standard IR metric for ranked retrieval
 - @10 reflects the above-the-fold SRP real estate
 - Clicks are the only behavioural signal available; treated as ordinal relevance grades (0, 1, 2, …)
 - Per-term evaluation respects that each query has a different candidate set
-- Baselines: impression_pos_avg (logged display order) and raw clicks descending
+- Evaluating all strategies against the same baselines makes the comparative analysis from D2 quantitative, not just theoretical
 
-### D6: Scoring approach — Smoothed, position-corrected CTR
+### D6: Scoring parameters — deferred to EDA
 
-**Design (pending data confirmation):**
+**Context:** The specific smoothing parameters (α, β), position correction function shape, and confidence thresholds depend on the data distribution.
 
-For each search term × product pair:
+**Decision:** D6 is intentionally left open. The EDA (`src/explore/`) will answer:
 
+1. **Sparsity level → smoothing strength:** If >90% rows have zero clicks, α and β need to pull harder toward the global prior. If only 50% are zero, lighter smoothing suffices.
+2. **Position bias shape → correction function:** Is CTR vs. impression_pos_avg linear, log-linear, or sigmoidal? Determines whether correction is a simple multiplier, log transform, or more complex function.
+3. **Impression thresholds → confidence floors:** At what minimum impression count does raw CTR become reliable? Informs the `min_impressions_threshold`.
+4. **CTR outliers → handling:** Are there products with impossibly high CTR (1 impression, 1 click) that skew global priors? Informs outlier flagging in the cleaner.
+5. **Cold-start terms → fallback strategy:** How many search terms have zero total clicks? These need the baseline ordering as fallback.
+
+**Output of D6:** A small `config` dict or dataclass with tuned values:
+
+```python
+@dataclass
+class RerankConfig:
+    smoothing_alpha: float      # prior pseudo-clicks
+    smoothing_beta: float       # prior pseudo-impressions
+    position_correction_type: str  # "linear" | "log" | "power"
+    position_correction_gamma: float  # decay factor
+    min_impressions_floor: int  # below this, use conservative score
+    outlier_ctr_threshold: float  # flag and cap CTRs above this
+    cold_start_fallback: str    # "baseline" | "global_mean"
 ```
-score = (clicks + α) / (impressions + β) × position_correction_factor
-```
-
-Where:
-- **α (prior clicks)** and **β (prior impressions)** form a Beta-binomial smoothing — shrinks noisy CTR estimates toward the global mean, critical for the long tail of sparse terms
-- **position_correction_factor** accounts for the well-known position bias (items at position 1 get more clicks regardless of relevance). Likely a multiplicative factor based on impression_pos_avg vs. a reference position
-- **Confidence floor:** If impressions < min_impressions_threshold, score is heavily penalized or assigned a default rank
-
-**Key references grounding this approach:**
-- Joachims et al. (2017) — position bias in click data for search
-- Beta-binomial smoothing used in Etsy, Airbnb CTR estimation
-- Practical examples from LinkedIn's search reranking blog posts
 
 ---
 
@@ -113,7 +157,7 @@ Where:
 | `click_pos_avg` | float/null | Where clicks happened (null if no clicks) |
 | `click_pos_median` | float/null | Robust click position (null if no clicks) |
 
-### Data unknowns to resolve:
+### Data unknowns to resolve (via `src/explore/`):
 
 - [ ] Row count and memory size
 - [ ] Unique search_terms count and candidates-per-term distribution
@@ -127,6 +171,39 @@ Where:
 
 ## Prototype Structure
 
+### Module: `src/explore/data_profile.py`
+```python
+def profile_dataset(df: pd.DataFrame) -> dict:
+    """Return dict of summary stats: rows, terms, sparsity, distributions."""
+
+def candidates_per_term_distribution(df: pd.DataFrame) -> pd.Series:
+    """Min, max, median, p95 candidates per search term."""
+
+def null_analysis(df: pd.DataFrame) -> pd.DataFrame:
+    """Per-column null counts and percentages."""
+```
+
+### Module: `src/explore/position_bias.py`
+```python
+def position_vs_ctr(df: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate CTR by impression position bucket — reveals bias shape."""
+
+def click_position_analysis(df: pd.DataFrame) -> dict:
+    """Compare impression_pos_avg vs click_pos_avg distributions."""
+```
+
+### Module: `src/explore/visualise.py`
+```python
+def plot_ctr_distribution(df: pd.DataFrame) -> None:
+    """Histogram + boxplot of CTR values."""
+
+def plot_position_bias_curve(df: pd.DataFrame) -> None:
+    """CTR vs. impression position — the key curve for D6."""
+
+def plot_term_candidates_histogram(df: pd.DataFrame) -> None:
+    """Histogram of candidates per search term."""
+```
+
 ### Module: `src/data/loader.py`
 ```python
 def load_search_data(path: str) -> pd.DataFrame:
@@ -138,36 +215,65 @@ def load_product_metadata(path: str) -> pd.DataFrame:
 
 ### Module: `src/data/cleaner.py`
 ```python
-def validate_and_clean(df: pd.DataFrame) -> pd.DataFrame:
-    """Deduplicate (search_term, product_id), handle nulls, flag outliers."""
+def validate_and_clean(df: pd.DataFrame, config: RerankConfig) -> pd.DataFrame:
+    """Deduplicate (search_term, product_id), handle nulls, flag/cap outliers."""
 
 def compute_global_stats(df: pd.DataFrame) -> dict:
     """Global priors for smoothing: mean CTR, mean clicks, etc."""
 ```
 
+### Module: `src/models/strategies.py`
+```python
+from enum import Enum
+
+class RerankStrategy(str, Enum):
+    NAIVE_CLICKS = "naive_clicks"
+    RAW_CTR = "raw_ctr"
+    POSITION_DEBIASED_CTR = "position_debiased_ctr"
+    SMOOTHED_CTR = "smoothed_ctr"
+    SMOOTHED_POSITION_CTR = "smoothed_position_ctr"
+
+def get_scorer(strategy: RerankStrategy) -> callable:
+    """Factory: return the scoring function for a given strategy."""
+```
+
 ### Module: `src/models/scorer.py`
 ```python
-def compute_smoothed_ctr(
-    row: pd.Series, 
-    global_ctr: float, 
-    alpha: float, 
-    beta: float
-) -> float:
-    """Beta-binomial smoothed CTR for a single term-product row."""
+def score_naive_clicks(df: pd.DataFrame) -> pd.Series:
+    """Strategy A: raw clicks descending."""
 
-def position_correction_factor(impression_pos_avg: float) -> float:
-    """Multiplier to offset position bias (lower pos → higher factor)."""
+def score_raw_ctr(df: pd.DataFrame) -> pd.Series:
+    """Strategy B: clicks / impressions."""
 
-def score_dataframe(df: pd.DataFrame, config: dict) -> pd.DataFrame:
-    """Apply full scoring pipeline: clean → smooth → correct → score."""
+def score_position_debiased_ctr(df: pd.DataFrame) -> pd.Series:
+    """Strategy C: CTR with position bias multiplier."""
+
+def score_smoothed_ctr(df: pd.DataFrame, alpha: float, beta: float) -> pd.Series:
+    """Strategy D: Beta-binomial smoothed CTR."""
+
+def score_smoothed_position_ctr(df: pd.DataFrame, config: RerankConfig) -> pd.Series:
+    """Strategy E (default): smoothed CTR + position bias correction."""
+
+def position_correction_factor(pos: float, config: RerankConfig) -> float:
+    """Position bias correction — shape determined by EDA (D6)."""
 ```
 
 ### Module: `src/models/reranker.py`
 ```python
-def rerank(term: str, df: pd.DataFrame, top_k: int | None = None) -> list[dict]:
-    """Filter to term, sort by score descending, return ordered product list."""
+def rerank(
+    term: str,
+    df: pd.DataFrame,
+    strategy: RerankStrategy = RerankStrategy.SMOOTHED_POSITION_CTR,
+    config: RerankConfig | None = None,
+    top_k: int | None = None,
+) -> list[dict]:
+    """Filter to term, score with chosen strategy, sort, return ordered list."""
 
-def rerank_all(df: pd.DataFrame) -> dict[str, list[dict]]:
+def rerank_all(
+    df: pd.DataFrame,
+    strategy: RerankStrategy = RerankStrategy.SMOOTHED_POSITION_CTR,
+    config: RerankConfig | None = None,
+) -> dict[str, list[dict]]:
     """Batch rerank all terms for evaluation."""
 ```
 
@@ -176,25 +282,39 @@ def rerank_all(df: pd.DataFrame) -> dict[str, list[dict]]:
 def ndcg_at_k(ranked_ids: list, relevance: dict, k: int = 10) -> float:
     """Compute NDCG@k for a single term's ranked list."""
 
-def evaluate_reranker(
-    df: pd.DataFrame, 
-    rerank_fn: callable, 
-    k: int = 10
+def evaluate_all_strategies(
+    df: pd.DataFrame,
+    config: RerankConfig,
+    k: int = 10,
+) -> pd.DataFrame:
+    """Run NDCG@k for every strategy against baselines, return comparison table."""
+
+def compare_to_baseline(
+    df: pd.DataFrame,
+    rerank_fn: callable,
+    k: int = 10,
 ) -> dict:
-    """Per-term NDCG@k, summary stats, and comparison to baselines."""
+    """Per-term NDCG@k, summary stats, and delta vs. baseline."""
 ```
 
 ### Module: `src/api.py`
 ```python
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 
 app = FastAPI()
 
 @app.get("/rerank")
-def rerank_endpoint(q: str, k: int = 20):
-    """Rerank products for search term and return top-k with scores."""
-    results = reranker.rerank(q, global_df, top_k=k)
-    return {"query": q, "results": results}
+def rerank_endpoint(
+    q: str = Query(..., description="Search term"),
+    k: int = Query(20, description="Top N results"),
+    strategy: RerankStrategy = Query(
+        RerankStrategy.SMOOTHED_POSITION_CTR,
+        description="Scoring strategy"
+    ),
+):
+    """Rerank products for search term and return top-k with scores + images."""
+    results = reranker.rerank(q, global_df, strategy=strategy, top_k=k)
+    return {"query": q, "strategy": strategy.value, "results": results}
 ```
 
 ---
@@ -203,9 +323,10 @@ def rerank_endpoint(q: str, k: int = 20):
 
 If time permits after the core reranker:
 
-- **Jupyter notebook** with inline product images using the CDN URL format (`https://cdn.aboutstatic.com/file/{image_hash}`)
+- **Jupyter notebook** leveraging `src/explore/` modules, with inline product images using the CDN URL format (`https://cdn.aboutstatic.com/file/{image_hash}`)
 - Per-query side-by-side: baseline ranking (impression_pos_avg) vs. reranker output
 - Quick table showing product thumbnail, name, original rank, new rank, click count, score
+- Strategy comparison dashboard — NDCG@10 for all D2 strategies in a single table
 - 3-5 example queries with annotated observations
 
 **Not** building a full Streamlit/Dash dashboard — a notebook with rich table display is sufficient for the timebox.
@@ -218,15 +339,15 @@ If time permits after the core reranker:
 - Search returns candidates; we need to order them by user preference
 - Click behaviour is the signal
 
-### Slide 2: Approach
-- Statistical reranking: smoothed CTR + position bias correction
-- Why not pure ML (time, explainability, data sparsity)
-- Why not simple heuristics (overfit to noise, no confidence handling)
+### Slide 2: Approach — the strategy comparison
+- Walk through strategies A–F from D2 (the comparison table)
+- Show why we evaluated multiple options, not just jumped to one
+- Highlight that the architecture supports pluggable strategies for future evolution
 
 ### Slide 3: Results (example queries)
 - Before/after ranking for 2-3 queries
-- NDCG@10 vs. baselines
-- Screenshots or product images to make it visual
+- NDCG@10 comparison across all strategies vs. baseline
+- Screenshots or product images to make it visual (non-technical audience)
 
 ### Slide 4: Production Vision (Task 3)
 - **Data pipeline:** dbt models for ingestion, cleaning, feature engineering — scheduled via Airflow
@@ -239,6 +360,7 @@ If time permits after the core reranker:
 - Simpler: position-debiased clicks only (loses confidence weighting)
 - More complex: LambdaRank (requires more data, harder to debug)
 - Why the middle ground is right for this phase
+- How the pluggable strategy system allows graduating to more complex models without rewriting the serving layer
 
 ---
 
@@ -246,6 +368,8 @@ If time permits after the core reranker:
 
 ```bash
 uv add fastapi uvicorn
+# For EDA visualisation:
+uv add matplotlib seaborn
 # Optionally for QA:
 uv add jupyter ipykernel tabulate
 # For production vision (not needed now, but noted):
@@ -254,16 +378,22 @@ uv add jupyter ipykernel tabulate
 
 ---
 
-## Open Questions
+## Build Order
 
-1. **Click sparsity impact:** If >90% of rows have zero clicks, we need strong smoothing — potentially a floor where below N impressions, default to global rank. Need data to tune N.
+The architecture imposes a dependency order — each phase unblocks the next:
 
-2. **Position bias shape:** Is impression_pos_avg linearly correlated with CTR (log-linear, as typical) or does it have plateaus? Determines whether correction is linear factor or log-transform.
-
-3. **Cold-start terms:** How many search_terms have zero total clicks? These terms have no signal — they get the impression_pos_avg baseline as fallback.
-
-4. **Duplicate products per term:** Are there duplicates on (search_term, product_id)? Need to handle in cleaner.
-
-5. **Click bot detection:** Are there any rows with impossibly high CTR (e.g., 1 impression, 1 click = 100%) that might be noise? Should be flagged.
-
-_Answers to these will come from the data exploration script._
+```
+1. src/explore/     →  Produces data profile, position bias curves, sparsity stats
+       ↓
+2. D6 resolution    →  Tune smoothing params, position correction shape, thresholds
+       ↓
+3. src/data/        →  Loader and cleaner, using thresholds from EDA
+       ↓
+4. src/models/      →  All five strategies, with config from D6
+       ↓
+5. src/evaluation/  →  NDCG@10 comparison across strategies
+       ↓
+6. src/api.py       →  FastAPI endpoint with strategy parameter
+       ↓
+7. QA notebook      →  Visual exploration (nice-to-have)
+```
