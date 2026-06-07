@@ -2,3 +2,4 @@
 .commandcode/coding-style/
 .mcp.json
 .vscode/"__pycache__/"  
+.vscode/
