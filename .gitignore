@@ -1,4 +1,4 @@
 .commandcode/taste/
 .commandcode/coding-style/
 .mcp.json
-.vscode/
+.vscode/"__pycache__/"  
