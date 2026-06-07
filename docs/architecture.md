@@ -28,14 +28,14 @@ Build a search reranker for ABOUT YOU's SRP — given a `search_term`, reorder t
 
 **Strategy comparison:**
 
-| Strategy | How it works | Pros | Cons |
-|----------|-------------|------|------|
-| **A: Naive clicks** | Rank by `clicks` descending | Dead simple, no parameters | Overfits items with many impressions; position bias unaddressed; sparse terms collapse to random order |
-| **B: Raw CTR** | Rank by `ctr` (clicks/impressions × 100) descending | Accounts for exposure differences | Unstable at low impressions (1 click / 1 impression = 100% CTR beats a proven item); no position bias correction |
-| **C: Position-debiased CTR** | Weighted CTR corrected by impression position bias | Handles the known position effect (items at rank 1 get more clicks regardless of relevance) | Still unstable at low impression counts; no confidence floor |
-| **D: Smoothed CTR (Beta-binomial)** | `(clicks + α) / (impressions + β)` — shrinks noisy estimates toward a global prior | Robust at low impressions; handles sparsity well; well-grounded in Bayesian statistics | Requires tuning α/β from data; slightly less interpretable to non-technical stakeholders |
-| **E: Smoothed + position-corrected CTR** | Strategy D combined with a position bias correction factor | Best of both worlds — handles sparsity and position bias | Most parameters to tune; needs EDA to inform position correction shape |
-| **F: Learning-to-rank (e.g., LambdaRank)** | Gradient-boosted pairwise ranking on engineered features | Can learn complex interactions; standard in production search systems | Needs significantly more data, feature engineering, train/val splits; not achievable within 5-6 hour timebox; harder to explain |
+| Strategy | Category | How it works | Pros | Cons |
+|----------|----------|-------------|------|------|
+| **A: Naive clicks** | Heuristic | Rank by `clicks` descending | Dead simple, no parameters | Overfits items with many impressions; position bias unaddressed; sparse terms collapse to random order |
+| **B: Raw CTR** | Heuristic | Rank by `ctr` (clicks/impressions × 100) descending | Accounts for exposure differences | Unstable at low impressions (1 click / 1 impression = 100% CTR beats a proven item); no position bias correction |
+| **C: Position-debiased CTR** | Heuristic | Weighted CTR corrected by impression position bias | Handles the known position effect (items at rank 1 get more clicks regardless of relevance) | Still unstable at low impression counts; no confidence floor |
+| **D: Smoothed CTR (Beta-binomial)** | Statistical | `(clicks + α) / (impressions + β)` — shrinks noisy estimates toward a global prior | Robust at low impressions; handles sparsity well; well-grounded in Bayesian statistics | Requires tuning α/β from data; slightly less interpretable to non-technical stakeholders |
+| **E: Smoothed + position-corrected CTR** | Statistical | Strategy D combined with a position bias correction factor | Best of both worlds — handles sparsity and position bias | Most parameters to tune; needs EDA to inform position correction shape |
+| **F: Learning-to-rank (e.g., LambdaRank)** | ML | Gradient-boosted pairwise ranking on engineered features | Can learn complex interactions; standard in production search systems | Needs significantly more data, feature engineering, train/val splits; not achievable within 5-6 hour timebox; harder to explain |
 
 **Selected default: Strategy E (smoothed + position-corrected CTR)** for the prototype. The specific smoothing parameters (α, β) and position correction function shape are deferred to D6 — they will be informed by the EDA.
 
