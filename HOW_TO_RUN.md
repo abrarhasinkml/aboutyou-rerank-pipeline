@@ -49,8 +49,6 @@ The server starts on `http://localhost:8000`. OpenAPI docs at `http://localhost:
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/rerank?q={term}&k={n}&strategy={strat}` | GET | Rerank products for a search term |
-| `/terms` | GET | List available search terms |
-| `/strategies` | GET | List available reranking strategies |
 | `/health` | GET | Health check |
 
 ### Example requests
