@@ -1,6 +1,6 @@
 """
-Data cleaner — deduplication, null handling, outlier flagging, and global
-stats computation for the search reranking dataset.
+Data cleaner - deduplication, null handling, outlier flagging, text normalisation,
+and global stats computation for the search reranking dataset.
 
 ### Tradeoffs (module-level)
 - Design: Stateless functions operating on DataFrames vs. a Cleaner class.
@@ -10,13 +10,14 @@ stats computation for the search reranking dataset.
   (3-4 calls) it's acceptable; at 20+ functions consider a config singleton.
 
 ### Scale notes
-- All operations are vectorised pandas — O(n) per function.
+- All operations are vectorised pandas - O(n) per function.
 - For 100GB+ data: each function maps to a Spark `.transform()` or Dask
   `.map_partitions()` call. Stateless design makes this trivial.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -28,13 +29,30 @@ from src.utils import get_logger, validate_columns
 logger = get_logger(__name__)
 
 
-# ── Configuration ────────────────────────────────────────────────────────────
+# -- Text normalisation -------------------------------------------------------
+
+
+def normalize_text(text: str) -> str:
+    """
+    Normalise a text string: lowercase, strip whitespace, collapse spaces.
+
+    Used on both search_term (at load time) and API query input (at request time)
+    so the two always match regardless of how the user types the query.
+    """
+    if text is None or (isinstance(text, float) and pd.isna(text)):
+        return ""
+    cleaned = str(text).lower().strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned
+
+
+# -- Configuration ------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class CleanerConfig:
     """
-    All cleaning thresholds in one place — nothing hardcoded inline.
+    All cleaning thresholds in one place - nothing hardcoded inline.
 
     ### Tradeoffs
     - Design: Frozen dataclass vs. plain dict.
@@ -46,12 +64,12 @@ class CleanerConfig:
     dedup_keep: str = "first"  # "first" or "last"
 
     # Null handling
-    # impression_pos_avg: 0.5% null → fill with median (conservative)
+    # impression_pos_avg: 0.5% null -> fill with median (conservative)
     impression_pos_fillna_strategy: str = "median"  # "median" | "mean" | "drop"
-    # click_pos columns: 58.8% null → leave as NaN (expected for zero-click rows)
+    # click_pos columns: 58.8% null -> leave as NaN (expected for zero-click rows)
     click_pos_fillna_strategy: str = "none"
 
-    # Outlier flagging (NOT capping — clicks > impressions is legitimate)
+    # Outlier flagging (NOT capping - clicks > impressions is legitimate)
     # We flag but do not modify CTR > 100% rows
     flag_ctr_above_100: bool = True
     flag_low_impressions: bool = True
@@ -65,28 +83,36 @@ class CleanerConfig:
 DEFAULT_CONFIG = CleanerConfig()
 
 
-# ── Core cleaning functions ──────────────────────────────────────────────────
+# -- Core cleaning functions --------------------------------------------------
+
+
+def normalize_search_terms(df: pd.DataFrame) -> pd.DataFrame:
+    """Lowercase, strip, and collapse whitespace on the search_term column."""
+    n_unique_before = df["search_term"].nunique()
+    df["search_term"] = df["search_term"].astype(str).apply(normalize_text)
+    n_unique_after = df["search_term"].nunique()
+    if n_unique_before != n_unique_after:
+        logger.info(
+            "Normalised search_term: unique terms %d -> %d",
+            n_unique_before, n_unique_after,
+        )
+    return df
+
+
+def normalize_product_names(df: pd.DataFrame) -> pd.DataFrame:
+    """Lowercase, strip, and collapse whitespace on the product_name column."""
+    if "product_name" not in df.columns:
+        return df
+    df["product_name"] = df["product_name"].astype(str).apply(normalize_text)
+    logger.debug("Normalised product_name column")
+    return df
 
 
 def deduplicate(
     df: pd.DataFrame,
     config: CleanerConfig = DEFAULT_CONFIG,
 ) -> pd.DataFrame:
-    """
-    Remove duplicate (search_term, product_id) pairs.
-
-    ### Tradeoffs
-    - Design: Keep first vs. keep highest-clicks row.
-    - Gain: `keep="first"` is deterministic and fast. For this dataset
-      (0 duplicates found in EDA) it's a no-op but validates the contract.
-    - Sacrifice: If duplicates existed, `keep="first"` is arbitrary.
-      Better: `keep` the row with the most impressions (more data).
-      Deferred — not needed for this dataset.
-
-    ### Optimisation
-    - O(n) — single DataFrame.duplicated() + boolean mask.
-
-    """
+    """Remove duplicate (search_term, product_id) pairs."""
     n_before = len(df)
     subset = list(config.dedup_subset)
 
@@ -105,22 +131,7 @@ def handle_nulls(
     df: pd.DataFrame,
     config: CleanerConfig = DEFAULT_CONFIG,
 ) -> pd.DataFrame:
-    """
-    Handle null values according to per-column strategy.
-
-    ### Tradeoffs
-    - Design: Per-column strategy vs. blanket fillna/dropna.
-    - Gain: Each column has different null semantics:
-      - impression_pos_avg (0.5% null): fill with median — losing 0.5%
-        of position data is worse than a conservative fill.
-      - click_pos columns (58.8% null): nulls are expected for zero-click
-        rows. Filling with 0 would bias averages. Leave as NaN.
-      - search_term/product_id: nulls are data errors — drop rows.
-
-    ### Optimisation
-    - O(n) per fill operation — vectorised pandas.
-    - fillna on a single column is in-place-safe and fast.
-    """
+    """Handle null values according to per-column strategy."""
     n_before = len(df)
 
     # Drop rows with null identifiers
@@ -153,7 +164,7 @@ def handle_nulls(
     # Click position nulls: leave as NaN (expected for zero-click rows)
     if config.click_pos_fillna_strategy != "none":
         logger.warning(
-            "click_pos_fillna_strategy=%s — this may bias averages for zero-click rows",
+            "click_pos_fillna_strategy=%s - this may bias averages for zero-click rows",
             config.click_pos_fillna_strategy,
         )
 
@@ -168,20 +179,7 @@ def flag_outliers(
     df: pd.DataFrame,
     config: CleanerConfig = DEFAULT_CONFIG,
 ) -> pd.DataFrame:
-    """
-    Add boolean flag columns for outlier rows without modifying the data.
-
-    ### Tradeoffs
-    - Design: Flag columns vs. dropping/capping outliers.
-    - Gain: Non-destructive — downstream code can filter or weight flagged
-      rows as needed. Preserves raw data integrity.
-    - Sacrifice: Adds columns to the DataFrame
-    - Key insight from EDA: CTR > 100% is NOT a bug (bookmarks/notifications).
-      We flag but never cap.
-
-    ### Optimisation
-    - O(n) per flag — single boolean comparison each.
-    """
+    """Add boolean flag columns for outlier rows without modifying the data."""
     flags = pd.DataFrame(index=df.index)
 
     if config.flag_ctr_above_100:
@@ -208,44 +206,21 @@ def flag_outliers(
     return df
 
 
-# ── Global stats ─────────────────────────────────────────────────────────────
+# -- Global stats -------------------------------------------------------------
 
 
 def compute_global_stats(df: pd.DataFrame) -> dict[str, Any]:
-    """
-    Compute global priors for Beta-binomial smoothing and baseline metrics.
-
-    ### Tradeoffs
-    - Design: Return a plain dict vs. a GlobalStats dataclass.
-    - Gain: Simple, JSON-serialisable, easy to pass around.
-    - Future ref: No type safety on keys. For this project (6 keys) it's fine;
-      at 50+ stats consider a dataclass or Pydantic model.
-
-    ### Optimisation
-    - O(n) — multiple .mean() calls, but each is a single pass over a column.
-      pandas caches column access — no repeated IO.
-
-    ### Scale notes
-    - For 100GB+ data: compute stats incrementally
-      or use approximate stats (t-digest for quantiles, HyperLogLog for
-      cardinality). Spark: `df.agg(mean("ctr"), mean("clicks"), ...)`.
-    """
+    """Compute global priors for Beta-binomial smoothing and baseline metrics."""
     clicked_mask = df["clicks"] > 0
 
     stats = {
-        # Beta-binomial smoothing priors
         "global_mean_ctr": float(df.loc[clicked_mask, "ctr"].mean()) if clicked_mask.any() else 0.0,
         "global_mean_clicks": float(df["clicks"].mean()),
         "global_mean_impressions": float(df["impressions"].mean()),
-        # Dataset size
         "n_rows": len(df),
         "n_unique_terms": int(df["search_term"].nunique()),
         "n_unique_products": int(df["product_id"].nunique()),
-        # Sparsity
         "zero_click_pct": round(float((df["clicks"] == 0).mean() * 100), 1),
-        # Derived: beta from global mean CTR
-        # alpha / (alpha + beta) = global_mean_ctr / 100
-        # With alpha=1: beta = 100/global_mean_ctr - 1
         "smoothing_beta": _compute_smoothing_beta(
             alpha=1.0,
             global_mean_ctr=df.loc[clicked_mask, "ctr"].mean() if clicked_mask.any() else 0.0,
@@ -264,15 +239,7 @@ def compute_global_stats(df: pd.DataFrame) -> dict[str, Any]:
 
 
 def _compute_smoothing_beta(alpha: float, global_mean_ctr: float) -> float:
-    """
-    Derive Beta-binomial smoothing parameter beta from alpha and global CTR.
-
-    ### Tradeoffs
-    - Design: Auto-compute beta vs. manual tuning.
-    - Gain: Beta is derived from data — adapts automatically when data refreshes.
-    - Sacrifice: Assumes alpha=1 (one prior pseudo-click). If global CTR is
-      0 (no clicks at all), beta defaults to 99 (very heavy smoothing).
-    """
+    """Derive Beta-binomial smoothing parameter beta from alpha and global CTR."""
     if global_mean_ctr <= 0 or global_mean_ctr > 100:
         logger.warning("global_mean_ctr=%.2f is out of range, using default beta=99", global_mean_ctr)
         return 99.0
@@ -280,7 +247,7 @@ def _compute_smoothing_beta(alpha: float, global_mean_ctr: float) -> float:
     return 100.0 / global_mean_ctr - 1.0
 
 
-# ── Pipeline ─────────────────────────────────────────────────────────────────
+# -- Pipeline -----------------------------------------------------------------
 
 
 def clean_search_data(
@@ -288,7 +255,7 @@ def clean_search_data(
     config: CleanerConfig = DEFAULT_CONFIG,
 ) -> pd.DataFrame:
     """
-    Full cleaning pipeline: deduplicate → handle nulls → flag outliers.
+    Full cleaning pipeline: normalise search terms -> deduplicate -> handle nulls -> flag outliers.
 
     ### Tradeoffs
     - Design: Explicit function chain vs. a pipeline object.
@@ -300,9 +267,17 @@ def clean_search_data(
     """
     logger.info("Starting cleaning pipeline: %d rows", len(df))
 
+    df = normalize_search_terms(df)
     df = deduplicate(df, config)
     df = handle_nulls(df, config)
     df = flag_outliers(df, config)
 
     logger.info("Cleaning pipeline complete: %d rows", len(df))
+    return df
+
+
+def clean_product_metadata(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalise product_name column in product metadata."""
+    logger.info("Cleaning product metadata: %d rows", len(df))
+    df = normalize_product_names(df)
     return df
