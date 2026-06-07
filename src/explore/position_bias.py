@@ -7,19 +7,8 @@ which informs the correction function shape in D6 (linear, log, or power).
 - Gain: Buckets are interpretable — a product owner can look at the curve and
   understand "items at position 1 get 3× the clicks of items at position 20".
   Regression would give a cleaner mathematical form but obscures the raw data.
-- Sacrifice: Bucket boundaries are arbitrary (we use adaptive binning to
-  mitigate). Edge buckets with few data points are noisy — we report count
-  per bucket so the consumer can assess reliability.
-- Alternative considered: Poisson/quasi-Poisson GLM for CTR vs. position —
-  rejected because the timebox doesn't justify the statistical ceremony and
-  the bucket approach produces the D6 config values more directly.
-
-### Scale notes (module-level)
-- Bucket operation is a `groupby` over position bins — O(n) single pass.
-- At production scale (100 M+ rows): binning is embarrassingly parallel.
-  In Spark: `df.withColumn("pos_bucket", floor(col("impression_pos_avg")/bucket_width))
-  .groupBy("pos_bucket").agg(mean("ctr"), count("*"))`.
-  In Dask: `df.groupby("pos_bucket").ctr.agg(["mean", "count"])`.
+- Bucket boundaries are arbitrary (we use adaptive binning to
+  mitigate). Edge buckets with few data points are noisy 
 """
 
 from pathlib import Path
@@ -31,12 +20,9 @@ import numpy as np
 POSITION_CONFIG = {
     "data_dir": "data",
     "search_file": "search_term_products.parquet",
-    # Bucketing strategy
     "max_position": 100,          # cap position at this value (long-tail start)
     "bucket_width": 5,            # width of each position bucket
     "adaptive_min_count": 30,     # merge adjacent buckets with fewer than this
-                                  # many rows — prevents noise in sparse regions
-    # Reference position for correction factor
     "reference_position": 5,      # items at pos ≤5 get "baseline" CTR
     "output_report": "src/explore/position_bias_report.md",
 }
@@ -50,16 +36,8 @@ def load_data(data_dir: str = "data", filename: str = "search_term_products.parq
     - Design: Column-pruned read vs. loading the full schema used in data_profile.
     - Gain: Reads only 4 columns (impression_pos_avg, ctr, clicks, impressions)
       instead of 9 — ~40 % less memory.
-    - Sacrifice: Can't enrich with search_term grouping here. That's intentional
-      — position bias is treated as a global effect (position N has the same
-      bias regardless of query), which is the standard assumption in IR position
-      bias models.
+    
 
-    ### Scale notes
-    - Prototype: Column-pruned read, fits in memory trivially.
-    - Production: `pyarrow.dataset` with column selection at the IO layer.
-      For 1 B+ rows: sample 1 % via row-group filtering, then apply position
-      bias correction from the sampled curve.
     """
     path = Path(data_dir) / filename
     return pd.read_parquet(path, columns=[
@@ -81,32 +59,18 @@ def bucket_by_position(
     - Gain: Merging low-count adjacent buckets eliminates noise at sparse
       positions (e.g., position 95-100 might have 3 rows — merging into a
       single 90-100 bucket gives a meaningful average).
-    - Sacrifice: Slightly more complex than fixed bins. The merge heuristic
-      (merge rightward until count ≥ min_count) can obscure fine-grained
-      patterns at the tail — for this dataset, the tail isn't our focus
-      (above-the-fold = positions 1-30).
+
 
     ### Optimisation
     - O(n) — single groupby with vectorised aggregation.
     - `pd.cut()` produces CategoricalIndex; groupby is hash-based, O(1) per
       unique bucket label.
 
-    ### Memory
-    - Input: ~19 K rows × 4 columns ≈ 0.6 MB.
-    - Output: ~20 bucket rows — negligible.
-    - Production (100 M rows): groupby result is proportional to number of
-      unique position values, not row count. Memory ≈ O(unique_positions/bucket_width).
-
-    ### Partitioning
-    - No natural partition key needed — this is a global analysis.
-      Production: pre-aggregated position buckets can be computed incrementally
-      as new data arrives (running mean per bucket via Welford's algorithm).
     """
-    # Cap positions beyond max_position into one tail bucket
+    
     work = df[df["impression_pos_avg"].notna()].copy()
     work["position"] = work["impression_pos_avg"].clip(upper=max_position)
 
-    # Create fixed-width buckets
     bin_edges = list(range(0, max_position + 1, bucket_width))
     if bin_edges[-1] < max_position:
         bin_edges.append(max_position + 1)
@@ -130,7 +94,6 @@ def bucket_by_position(
         mean_position=("position", "mean"),
     ).reset_index()
 
-    # Adaptive merge: combine low-count adjacent buckets
     buckets = _adaptive_merge(buckets, adaptive_min_count)
 
     return buckets
@@ -141,13 +104,10 @@ def _adaptive_merge(buckets: pd.DataFrame, min_count: int) -> pd.DataFrame:
     Merge adjacent position buckets with fewer than min_count rows.
 
     ### Tradeoffs
-    - Design: Greedy right-merge vs. dynamic programming optimal merge.
+    - Design: Greedy right-merge
     - Gain: Simple, deterministic, single-pass. Greedy is sufficient because
       the tail is monotonically sparse (positions get thinner, never denser).
-    - Sacrifice: For pathological data (highly oscillating density), greedy
-      can produce suboptimal merges. Not a concern for position data which
-      is naturally monotonic in sparsity.
-
+    
     ### Optimisation
     - O(n_buckets) single pass — typically ~20 buckets, trivially fast.
     """
@@ -272,10 +232,6 @@ def assess_fit(buckets: pd.DataFrame) -> dict:
       non-parametric model.
     - Gain: The three forms (linear, log, power) map to simple correction
       functions the product owner can understand. R² gives a quick heuristic.
-    - Sacrifice: R² on 15-20 bucketed data points is noisy. This is a
-      directional signal, not a rigorous model selection. The final D6 choice
-      should also consider simplicity (linear is preferred unless data clearly
-      demands otherwise).
 
     ### Returns
     Dict with R² values for each model fit, plus the recommended form.

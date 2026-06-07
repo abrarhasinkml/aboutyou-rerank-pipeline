@@ -5,7 +5,6 @@ FastAPI serving layer — exposes the reranker via HTTP.
 - Design: Single FastAPI module vs. a multi-file router setup.
 - Gain: One file for a single endpoint. FastAPI gives us automatic OpenAPI docs,
   request validation, and async support with ~50 lines of actual code.
-- Sacrifice: At scale (auth, rate limiting, middleware), split into a `router/` package.
 
 ### Scale notes
 - Startup: loads full dataset into memory (~19K rows, ~2MB). For 100GB+ data,
@@ -76,9 +75,6 @@ def sanitise_query(q: str) -> str:
     Normalise user query input before passing to the reranker.
 
     Steps: lowercase → strip whitespace → collapse multiple spaces.
-
-    This lives in the API layer (not reranker.py) because the reranker is a pure
-    function — it shouldn't modify its input. Sanitisation is a presentation/API concern.
 
     Args:
         q: Raw user input string.

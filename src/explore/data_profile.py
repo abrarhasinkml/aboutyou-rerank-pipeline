@@ -7,8 +7,6 @@ confidence thresholds, and position bias correction design (D6).
   vs. interactive notebook exploration.
 - Gain: Reproducible, version-controllable output. The markdown report serves
   as design documentation — the panel can read it without running code.
-- Sacrifice: Less interactive than a notebook. For ad-hoc questions, the
-  notebook in Task 2 imports these functions and adds inline visuals.
 
 ### Scale notes (module-level)
 - Prototype: Full read — dataset fits in memory (~10–50 MB).
@@ -23,18 +21,11 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 
-# ── Configuration ────────────────────────────────────────────────────────────
-# All thresholds live here — nothing hardcoded inline.
-# These are DEFAULTS; the markdown report may recommend tuned values.
 
 PROFILE_CONFIG = {
     "data_dir": "data",
     "search_file": "search_term_products.parquet",
     "products_file": "products.csv",
-    # Thresholds for flagging data characteristics
-    # CTR > 100% is NOT an error — clicks from bookmarks, push notifications,
-    # or email can legitimately exceed SRP impressions (see data_profile_report.md
-    # for full analysis). We track it but do not cap.
     "ctr_exceeds_100_threshold": 100.0,   # flag CTR > 100% as signal, not noise
     "low_impression_threshold": 3,        # flag rows with < N impressions
     "output_report": "src/explore/data_profile_report.md",
@@ -51,7 +42,7 @@ def load_search_data(
     ### Tradeoffs
     - Design: Full read — simplest path for a prototype dataset.
     - Gain: Zero cognitive overhead; all columns available for profiling.
-    - Sacrifice: If the dataset were 100× larger, this would OOM. The
+    - If the dataset were 100× larger, this would OOM. The
       production equivalent (documented below) addresses this.
 
     ### Scale notes

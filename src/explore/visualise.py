@@ -5,10 +5,6 @@ Visualise EDA findings — generates plots saved to src/explore/plots/.
 - Design: Save-to-file plots vs. inline notebook rendering.
 - Gain: Plots are committed artifacts — reviewable in PRs, embeddable in
   markdown reports. No Jupyter dependency required.
-- Sacrifice: No interactive exploration. The notebook in Task 2 can import
-  these functions for interactive use.
-- Alternative considered: Generate base64 inline images in the markdown —
-  rejected because it bloats the .md file and isn't diffable.
 
 ### Scale notes
 - Plotting operates on the already-profiled/aggregated data (20-200 rows),
@@ -21,7 +17,7 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 import matplotlib
-matplotlib.use("Agg")  # non-interactive backend — works in CI/headless
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 
@@ -40,9 +36,7 @@ def plot_ctr_distribution(df: pd.DataFrame) -> Path:
     ### Tradeoffs
     - Design: Two-panel figure (hist + boxplot) sharing the x-axis.
     - Gain: Shows both the shape (histogram) and outliers (boxplot) in one view.
-    - Sacrifice: Log-scale x-axis makes the 0-CTR spike less dramatic visually.
-      Linear scale hides the long tail. We use log with a special 0-bin marker.
-
+  
     ### Memory
     - Operates on the ctr column only (~19K floats ≈ 150KB). No OOM risk.
     """
@@ -84,8 +78,6 @@ def plot_position_bias_curve(df: pd.DataFrame) -> Path:
     - Design: Line chart with confidence intervals vs. bar chart.
     - Gain: Line makes the flat trend visually obvious — reinforces the
       "no bias" conclusion. CI bands show where noise is high.
-    - Sacrifice: Bucketing obscures per-row variation. Acceptable because
-      the aggregate pattern is what matters for D6.
     """
     work = df[df["impression_pos_avg"].notna()].copy()
     work["pos_bucket"] = pd.cut(
@@ -144,8 +136,6 @@ def plot_candidates_per_term(df: pd.DataFrame) -> Path:
     - Design: Histogram with annotated median/mean.
     - Gain: Shows the distribution shape (long-tail right skew) and the
       100-candidate cap (p95 = p99 = 100).
-    - Sacrifice: No per-term breakdown. Acceptable — the aggregate shape
-      is what matters for understanding data density.
     """
     term_counts = df.groupby("search_term").size()
     plot_dir = _ensure_plot_dir()
@@ -179,8 +169,6 @@ def plot_click_sparsity(df: pd.DataFrame) -> Path:
     - Design: Single bar chart with percentage labels.
     - Gain: Immediately communicates the 58.8% zero-click mass to
       non-technical stakeholders.
-    - Sacrifice: Doesn't show the distribution of non-zero clicks.
-      The CTR distribution plot covers that.
     """
     zero = (df["clicks"] == 0).sum()
     has = (df["clicks"] > 0).sum()

@@ -9,10 +9,6 @@ the internals of each scorer.
 - Design: Separate function per strategy vs. one function with a strategy param.
 - Gain: Each function is independently testable, has its own docstring/tradeoff
   notes, and can be optimised independently.
-- Sacrifice: Some code duplication across strategies (e.g., the smoothed CTR
-  functions both access 'clicks' and 'impressions' columns). For 5 strategies
-  this is acceptable; at 20+ consider a base class or composable transforms.
-
 ### Scale notes
 - All functions are vectorised pandas — O(n) single pass.
 - For 100GB+ data: each scorer maps to a Spark UDF or Dask map_partitions.

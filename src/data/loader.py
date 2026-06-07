@@ -7,7 +7,7 @@ schema validation, and structured logging.
   for production-scale streaming. Both validate schema.
 - Gain: load_full() is simple and fast for 1.6MB. load_chunked() demonstrates
   the production pattern (bounded memory, chunk-level processing).
-- Sacrifice: load_chunked() returns a generator — callers must iterate or
+- load_chunked() returns a generator — callers must iterate or
   explicitly concatenate. This is intentional: it forces awareness of memory.
 
 ### Scale notes
@@ -85,7 +85,6 @@ def load_product_metadata(
     ### Tradeoffs
     - Design: Single pd.read_csv() vs. chunked.
     - Gain: Product metadata is small (~16K rows, <2MB). Single read is fine.
-    - Sacrifice: Same memory concern at extreme scale.
     """
     path = Path(data_dir) / filename
     logger.info("Loading product metadata: %s", path)

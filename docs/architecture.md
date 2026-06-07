@@ -54,7 +54,6 @@ class RerankStrategy(str, Enum):
 # API usage: GET /rerank?q=kleid&k=20&strategy=smoothed_position_ctr
 ```
 
-This demonstrates to the panel that we didn't pick an approach arbitrarily — we compared alternatives, understood their trade-offs, and built a system extensible enough to support multiple strategies as the product evolves.
 
 ### D3: Layered Python architecture with dedicated EDA
 
@@ -84,7 +83,6 @@ src/
 - The `explore/` package runs first — its outputs (distribution stats, position bias curves, sparsity metrics) directly inform the parameters in D6 and the `cleaner.py` thresholds
 - Separation of concerns mirrors what a production dbt pipeline would do (sources → staging → marts → serving), but without the warehouse dependency
 - Each layer is independently testable
-- The EDA is not a throwaway notebook — it's part of the module, producing structured outputs that feed into configuration
 
 ### D4: FastAPI serving layer
 
@@ -93,9 +91,7 @@ src/
 **Decision:** Lightweight FastAPI app with a single endpoint — `GET /rerank?q={search_term}&k={top_n}&strategy={strategy}` returning ordered product IDs with scores, metadata, and product images (via CDN URL construction).
 
 **Rationale:** 
-- Shows production serving thinking beyond the notebook
 - The `strategy` parameter demonstrates the pluggable approach from D2
-- Low effort (~50 lines) for high signal to a senior role interview panel
 - Product images in the response make the presentation demo visually compelling
 
 ### D5: Evaluation metric — NDCG@10 with click-based relevance
@@ -110,16 +106,12 @@ src/
 
 **Rationale:**
 - NDCG is the standard IR metric for ranked retrieval
-- @10 reflects the above-the-fold SRP real estate
 - Clicks are the only behavioural signal available; treated as ordinal relevance grades (0, 1, 2, …)
 - Per-term evaluation respects that each query has a different candidate set
 - Evaluating all strategies against the same baselines makes the comparative analysis from D2 quantitative, not just theoretical
 
 ### D6: Scoring parameters — resolved via EDA
 
-**Context:** The EDA is complete. Full findings in `src/explore/eda_findings.md`.
-
-**Decision -- all EDA questions answered with concrete parameters:**
 
 | Question | Finding | RerankConfig impact |
 |----------|---------|---------------------|
@@ -130,7 +122,6 @@ src/
 | Cold-start | 0% -- every term has >=5 clicks | Placeholder retained |
 | Seasonality | Data spans months -- stale clicks on old trends | **Deferred.** Production: recency decay |
 
-**Resolved RerankConfig:**
 
 ```python
 @dataclass
@@ -159,15 +150,6 @@ class RerankConfig:
 | `click_pos_avg` | float/null | Where clicks happened (null if no clicks) |
 | `click_pos_median` | float/null | Robust click position (null if no clicks) |
 
-### Data unknowns to resolve (via `src/explore/`):
-
-- [ ] Row count and memory size
-- [ ] Unique search_terms count and candidates-per-term distribution
-- [ ] Click sparsity (% rows with clicks=0)
-- [ ] CTR distribution (range, percentiles, extreme values)
-- [ ] Position column ranges and null rates (especially click_pos_*)
-- [ ] Correlation between impression_pos_avg and clicks (position bias evidence)
-- [ ] Terms with zero total clicks (cold-start handling needed)
 
 ---
 
@@ -284,13 +266,6 @@ def rerank_all(
 def ndcg_at_k(ranked_ids: list, relevance: dict, k: int = 10) -> float:
     """Compute NDCG@k for a single term's ranked list."""
 
-def evaluate_all_strategies(
-    df: pd.DataFrame,
-    config: RerankConfig,
-    k: int = 10,
-) -> pd.DataFrame:
-    """Run NDCG@k for every strategy against baselines, return comparison table."""
-
 def compare_to_baseline(
     df: pd.DataFrame,
     rerank_fn: callable,
@@ -328,55 +303,7 @@ If time permits after the core reranker:
 - **Jupyter notebook** leveraging `src/explore/` modules, with inline product images using the CDN URL format (`https://cdn.aboutstatic.com/file/{image_hash}`)
 - Per-query side-by-side: baseline ranking (impression_pos_avg) vs. reranker output
 - Quick table showing product thumbnail, name, original rank, new rank, click count, score
-- Strategy comparison dashboard — NDCG@10 for all D2 strategies in a single table
 - 3-5 example queries with annotated observations
-
-**Not** building a full Streamlit/Dash dashboard — a notebook with rich table display is sufficient for the timebox.
-
----
-
-## Presentation Structure (Task 4 — 15-20 min)
-
-### Slide 1: Problem
-- Search returns candidates; we need to order them by user preference
-- Click behaviour is the signal
-
-### Slide 2: Approach — the strategy comparison
-- Walk through strategies A–F from D2 (the comparison table)
-- Show why we evaluated multiple options, not just jumped to one
-- Highlight that the architecture supports pluggable strategies for future evolution
-
-### Slide 3: Results (example queries)
-- Before/after ranking for 2-3 queries
-- NDCG@10 comparison across all strategies vs. baseline
-- Screenshots or product images to make it visual (non-technical audience)
-
-### Slide 4: Production Vision (Task 3)
-- **Data pipeline:** dbt models for ingestion, cleaning, feature engineering — scheduled via Airflow
-- **Serving:** FastAPI microservice with Redis cache for hot queries
-- **Experimentation:** Online A/B testing framework, NDCG monitoring
-- **Personalization:** User-level features, collaborative filtering for cold-start terms
-- **Unseen terms:** Semantic similarity to known terms via embeddings
-
-### Slide 5: Trade-offs & Alternatives
-- Simpler: position-debiased clicks only (loses confidence weighting)
-- More complex: LambdaRank (requires more data, harder to debug)
-- Why the middle ground is right for this phase
-- How the pluggable strategy system allows graduating to more complex models without rewriting the serving layer
-
----
-
-## Dependencies to Add
-
-```bash
-uv add fastapi uvicorn
-# For EDA visualisation:
-uv add matplotlib seaborn
-# Optionally for QA:
-uv add jupyter ipykernel tabulate
-# For production vision (not needed now, but noted):
-# scikit-learn, lightgbm, scipy
-```
 
 ---
 
@@ -386,8 +313,6 @@ The architecture imposes a dependency order — each phase unblocks the next:
 
 ```
 1. src/explore/     →  Produces data profile, position bias curves, sparsity stats
-       ↓
-2. D6 resolution    →  Tune smoothing params, position correction shape, thresholds
        ↓
 3. src/data/        →  Loader and cleaner, using thresholds from EDA
        ↓

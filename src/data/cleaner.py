@@ -64,13 +64,10 @@ class CleanerConfig:
     dedup_keep: str = "first"  # "first" or "last"
 
     # Null handling
-    # impression_pos_avg: 0.5% null -> fill with median (conservative)
     impression_pos_fillna_strategy: str = "median"  # "median" | "mean" | "drop"
-    # click_pos columns: 58.8% null -> leave as NaN (expected for zero-click rows)
     click_pos_fillna_strategy: str = "none"
 
     # Outlier flagging (NOT capping - clicks > impressions is legitimate)
-    # We flag but do not modify CTR > 100% rows
     flag_ctr_above_100: bool = True
     flag_low_impressions: bool = True
     low_impression_threshold: int = 3  # from EDA: 38.4% of rows below this

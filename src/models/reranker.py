@@ -26,14 +26,12 @@ from src.utils import get_logger
 logger = get_logger(__name__)
 
 
-# ── Default parameters from D6 resolution ────────────────────────────────────
-
 DEFAULT_PARAMS: dict[str, Any] = {
-    "alpha": 1.0,               # moderate sparsity -> light prior
-    "beta": 40.0,               # derived: 100/2.5 - 1 = 39, rounded to 40
-    "reference_position": 5,    # reference for position correction (Strategy E only)
-    "gamma": 0.01,              # decay factor for position correction (Strategy E only)
-    "min_impressions_floor": 3, # rows below this get penalised score
+    "alpha": 1.0,               
+    "beta": 40.0,               
+    "reference_position": 5,    
+    "gamma": 0.01,             
+    "min_impressions_floor": 3, 
 }
 
 
@@ -77,7 +75,6 @@ def rerank(
     min_impressions: int = merged_params.get("min_impressions_floor", 3)
     low_impression_mask = term_df["impressions"] < min_impressions
     if low_impression_mask.any():
-        # Pull low-impression rows toward 0 (conservative: don't trust thin data)
         penalty_factor = term_df.loc[low_impression_mask, "impressions"] / min_impressions
         term_df.loc[low_impression_mask, "score"] *= penalty_factor
         logger.debug(
