@@ -37,7 +37,7 @@ Build a search reranker for ABOUT YOU's SRP — given a `search_term`, reorder t
 | **E: Smoothed + position-corrected CTR** | Statistical | Strategy D combined with a position bias correction factor | Best of both worlds — handles sparsity and position bias | Most parameters to tune; needs EDA to inform position correction shape |
 | **F: Learning-to-rank (e.g., LambdaRank)** | ML | Gradient-boosted pairwise ranking on engineered features | Can learn complex interactions; standard in production search systems | Needs significantly more data, feature engineering, train/val splits; not achievable within 5-6 hour timebox; harder to explain |
 
-**Selected default: Strategy E (smoothed + position-corrected CTR)** for the prototype. The specific smoothing parameters (α, β) and position correction function shape are deferred to D6 — they will be informed by the EDA.
+**Selected default: Strategy D (smoothed CTR, Beta-binomial)** for the prototype. The EDA revealed no position bias in this dataset (see D6), so position correction was dropped. Strategy E is retained for comparison only.
 
 **Pluggable implementation:** The reranker accepts a `strategy` enum, allowing the API to expose different approaches:
 
@@ -115,30 +115,32 @@ src/
 - Per-term evaluation respects that each query has a different candidate set
 - Evaluating all strategies against the same baselines makes the comparative analysis from D2 quantitative, not just theoretical
 
-### D6: Scoring parameters — deferred to EDA
+### D6: Scoring parameters — resolved via EDA
 
-**Context:** The specific smoothing parameters (α, β), position correction function shape, and confidence thresholds depend on the data distribution.
+**Context:** The EDA is complete. Full findings in `src/explore/eda_findings.md`.
 
-**Decision:** D6 is intentionally left open. The EDA (`src/explore/`) will answer:
+**Decision -- all EDA questions answered with concrete parameters:**
 
-1. **Sparsity level → smoothing strength:** If >90% rows have zero clicks, α and β need to pull harder toward the global prior. If only 50% are zero, lighter smoothing suffices.
-2. **Position bias shape → correction function:** Is CTR vs. impression_pos_avg linear, log-linear, or sigmoidal? Determines whether correction is a simple multiplier, log transform, or more complex function.
-3. **Impression thresholds → confidence floors:** At what minimum impression count does raw CTR become reliable? Informs the `min_impressions_threshold`.
-4. **CTR outliers → handling:** Are there products with impossibly high CTR (1 impression, 1 click) that skew global priors? Informs outlier flagging in the cleaner.
-5. **Cold-start terms → fallback strategy:** How many search terms have zero total clicks? These need the baseline ordering as fallback.
+| Question | Finding | RerankConfig impact |
+|----------|---------|---------------------|
+| Sparsity | 58.8% zero-click rows -- moderate | `alpha=1.0`, `beta` auto-computed from global CTR (~2.5%) |
+| Position bias | **No bias** -- R2<0.38 all models; deep pos (95-99) CTR 19.7% > top (0-4) 13.2% | `position_correction_type="none"` -- correction would harm reranker |
+| Impression floor | 38.4% rows have <3 impressions | `min_impressions_floor=3` |
+| CTR > 100% | 51 rows (0.27%) -- clicks from bookmarks/notifications/email exceed SRP impressions | No cap; clicks=engagement, impressions=confidence |
+| Cold-start | 0% -- every term has >=5 clicks | Placeholder retained |
+| Seasonality | Data spans months -- stale clicks on old trends | **Deferred.** Production: recency decay |
 
-**Output of D6:** A small `config` dict or dataclass with tuned values:
+**Resolved RerankConfig:**
 
 ```python
 @dataclass
 class RerankConfig:
-    smoothing_alpha: float      # prior pseudo-clicks
-    smoothing_beta: float       # prior pseudo-impressions
-    position_correction_type: str  # "linear" | "log" | "power"
-    position_correction_gamma: float  # decay factor
-    min_impressions_floor: int  # below this, use conservative score
-    outlier_ctr_threshold: float  # flag and cap CTRs above this
-    cold_start_fallback: str    # "baseline" | "global_mean"
+    smoothing_alpha: float = 1.0           # moderate sparsity -> light prior
+    smoothing_beta: float | None = None    # auto-computed from global CTR
+    position_correction_type: str = "none" # EDA: no bias exists in this data
+    position_correction_gamma: float = 0.0
+    min_impressions_floor: int = 3         # 38.4% of rows below this
+    cold_start_fallback: str = "baseline"  # placeholder for future refreshes
 ```
 
 ---
