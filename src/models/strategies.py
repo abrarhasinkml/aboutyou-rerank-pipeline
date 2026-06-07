@@ -7,8 +7,6 @@ that returns the appropriate scoring function.
 - Gain: Enum gives type safety and IDE autocomplete. Factory decouples
   the strategy name (string/API param) from the implementation (function).
   New strategies are added in one place (the enum + the factory).
-- Sacrifice: One extra indirection. For 5 strategies the overhead is
-  negligible. At 50+ strategies, consider a decorator-based registry.
 
 ### Scale notes
 - Strategy dispatch is O(1) — a dict lookup. No performance concern.
@@ -25,6 +23,13 @@ import pandas as pd
 
 from src.data.cleaner import CleanerConfig
 from src.utils import get_logger
+from src.models.scorer import (
+        score_naive_clicks,
+        score_position_debiased_ctr,
+        score_raw_ctr,
+        score_smoothed_ctr,
+        score_smoothed_position_ctr,
+    )
 
 logger = get_logger(__name__)
 
@@ -60,14 +65,7 @@ def get_scorer(strategy: RerankStrategy) -> Callable[[pd.DataFrame, dict], pd.Se
     Raises:
         ValueError: If the strategy is not implemented.
     """
-    from src.models.scorer import (
-        score_naive_clicks,
-        score_position_debiased_ctr,
-        score_raw_ctr,
-        score_smoothed_ctr,
-        score_smoothed_position_ctr,
-    )
-
+    
     _registry: dict[RerankStrategy, Callable[[pd.DataFrame, dict], pd.Series]] = {
         RerankStrategy.NAIVE_CLICKS: score_naive_clicks,
         RerankStrategy.RAW_CTR: score_raw_ctr,

@@ -5,7 +5,7 @@ strategy, sorts descending, and returns an ordered list.
 ### Tradeoffs (module-level)
 - Design: Stateless functions taking DataFrame + strategy vs. a Reranker class.
 - Gain: Pure functions are testable and parallelisable. No mutable state.
-- Sacrifice: Config (params dict) must be threaded through each call. At scale,
+- Loss: Config (params dict) must be threaded through each call. At scale,
   consider a RerankerConfig dataclass like CleanerConfig.
 
 ### Scale notes
@@ -135,8 +135,6 @@ def rerank_all(
     - Gain: Each term is independent — trivially parallelisable.
       For 305 terms, sequential is fast (<1s). For 1M+ terms, use
       Spark groupBy or Dask map_partitions.
-    - Sacrifice: No cross-term scoring or global reordering. Each term
-      is reranked independently.
     """
     merged_params = {**DEFAULT_PARAMS, **(params or {})}
 
