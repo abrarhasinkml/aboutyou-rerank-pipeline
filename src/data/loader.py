@@ -9,8 +9,6 @@ schema validation, and structured logging.
   the production pattern (bounded memory, chunk-level processing).
 - Sacrifice: load_chunked() returns a generator — callers must iterate or
   explicitly concatenate. This is intentional: it forces awareness of memory.
-- Alternative: Always concatenate into one DataFrame. Rejected — defeats the
-  purpose of chunked loading for the coding standards.
 
 ### Scale notes
 - Prototype (1.6MB): load_full() is fine — 1 chunk, <100ms.
@@ -60,7 +58,7 @@ def load_search_data(
     ### Tradeoffs
     - Design: Single pd.read_parquet() vs. chunked iteration.
     - Gain: Simple, fast for prototype scale (1.6MB, <100ms).
-    - Sacrifice: Entire file in memory. At 100GB+ this OOMs.
+    - Entire file in memory. At 100GB+ this OOMs.
       Use load_chunked_search() for production.
 
     ### Scale notes
@@ -115,8 +113,6 @@ def load_chunked_search(
     - Gain: Memory bounded by chunk_size (default 50K rows ≈ 4MB).
       Each chunk can be processed independently — maps to distributed
       workers in Spark/Dask.
-    - Sacrifice: Caller must handle partial results (concat, aggregate
-      per-chunk, or stream to a sink). More complex API.
     - Validation: Schema is validated on the first chunk only. Subsequent
       chunks are assumed consistent (parquet guarantees this; CSV does not
       — for CSV, validate each chunk).
@@ -154,7 +150,7 @@ def load_chunked_search(
 def load_chunked_products(
     data_dir: Path | str = DATA_DIR,
     filename: str = PRODUCTS_FILE,
-    chunk_size: int = 50_000,
+    chunk_size: int = 50000,
 ) -> Generator[pd.DataFrame, None, None]:
     """
     Yield validated chunks of product metadata CSV.
@@ -162,7 +158,7 @@ def load_chunked_products(
     ### Tradeoffs
     - Design: Same chunked generator pattern as load_chunked_search.
     - CSV has no row-group metadata — chunks are line-count based.
-    - Sacrifice: CSV dtype inference can differ per chunk. We validate
+    - Assumption: CSV dtype inference can differ per chunk. We validate
       schema on the first chunk and rely on consistent types thereafter.
     """
     path = Path(data_dir) / filename

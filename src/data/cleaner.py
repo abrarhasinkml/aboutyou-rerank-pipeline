@@ -116,7 +116,6 @@ def handle_nulls(
       - click_pos columns (58.8% null): nulls are expected for zero-click
         rows. Filling with 0 would bias averages. Leave as NaN.
       - search_term/product_id: nulls are data errors — drop rows.
-    - Sacrifice: More code than a single fillna(0). But correctness > brevity.
 
     ### Optimisation
     - O(n) per fill operation — vectorised pandas.
@@ -176,8 +175,7 @@ def flag_outliers(
     - Design: Flag columns vs. dropping/capping outliers.
     - Gain: Non-destructive — downstream code can filter or weight flagged
       rows as needed. Preserves raw data integrity.
-    - Sacrifice: Adds columns to the DataFrame (~19K booleans ≈ 19KB).
-      Negligible memory cost.
+    - Sacrifice: Adds columns to the DataFrame
     - Key insight from EDA: CTR > 100% is NOT a bug (bookmarks/notifications).
       We flag but never cap.
 
@@ -220,7 +218,7 @@ def compute_global_stats(df: pd.DataFrame) -> dict[str, Any]:
     ### Tradeoffs
     - Design: Return a plain dict vs. a GlobalStats dataclass.
     - Gain: Simple, JSON-serialisable, easy to pass around.
-    - Sacrifice: No type safety on keys. For this project (6 keys) it's fine;
+    - Future ref: No type safety on keys. For this project (6 keys) it's fine;
       at 50+ stats consider a dataclass or Pydantic model.
 
     ### Optimisation
@@ -228,7 +226,7 @@ def compute_global_stats(df: pd.DataFrame) -> dict[str, Any]:
       pandas caches column access — no repeated IO.
 
     ### Scale notes
-    - For 100GB+ data: compute stats incrementally (Welford's online algorithm)
+    - For 100GB+ data: compute stats incrementally
       or use approximate stats (t-digest for quantiles, HyperLogLog for
       cardinality). Spark: `df.agg(mean("ctr"), mean("clicks"), ...)`.
     """
@@ -296,7 +294,7 @@ def clean_search_data(
     - Design: Explicit function chain vs. a pipeline object.
     - Gain: Each step is independently testable and logged. Clear data
       lineage in logs.
-    - Sacrifice: Each step creates a new DataFrame (not in-place). For
+    - Future ref: Each step creates a new DataFrame (not in-place). For
       19K rows this is fine; for 100GB+ consider in-place operations or
       a streaming pipeline.
     """
