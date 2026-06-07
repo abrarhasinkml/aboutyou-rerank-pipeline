@@ -15,8 +15,6 @@ cd aboutyou-rerank-pipeline
 # With uv (recommended)
 uv sync
 
-# Or with pip
-pip install -e .
 ```
 
 ## Run Tests
@@ -64,8 +62,6 @@ curl "http://localhost:8000/rerank?q=kleid&k=10"
 # Use a different strategy
 curl "http://localhost:8000/rerank?q=kleid&k=10&strategy=naive_clicks"
 
-# List available terms
-curl "http://localhost:8000/terms"
 ```
 
 ## Run the QA Notebook
@@ -82,8 +78,6 @@ The notebook covers:
 1. Data loading and cleaning
 2. Strategy comparison (NDCG@10 for all 5 strategies + 2 baselines)
 3. Side-by-side baseline vs. reranker output with product images
-4. Per-term NDCG distribution plots
-5. Best/worst performing terms analysis
 
 ## Run Evaluation Standalone
 
