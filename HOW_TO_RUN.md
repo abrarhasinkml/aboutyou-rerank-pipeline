@@ -8,10 +8,6 @@
 ## Setup
 
 ```bash
-# Clone and install dependencies
-git clone https://github.com/abrarhasinkml/aboutyou-rerank-pipeline.git
-cd aboutyou-rerank-pipeline
-
 # With uv (recommended)
 uv sync
 
